@@ -1,6 +1,10 @@
 package raft
 
-import "sync"
+import (
+	"bytes"
+	"encoding/gob"
+	"sync"
+)
 
 type Persister struct {
 	mutex     sync.Mutex
@@ -56,4 +60,14 @@ func (p *Persister) ReadSnapshot() []byte {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	return p.snapshot
+}
+
+func (r *Raft) Persist() {
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(r.currentTerm)
+	e.Encode(r.votedFor)
+	e.Encode(r.log)
+	data := w.Bytes()
+	r.persister.SaveRaftState(data)
 }
