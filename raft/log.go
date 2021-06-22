@@ -31,7 +31,7 @@ func getMajoritySameIndex(matchIndex []int) int {
 }
 
 func (r *Raft) GetAppendLogs(slave int) (prevLogIndex int, prevLogTerm int, entries []LogEntry) {
-
+	return
 }
 
 func (r *Raft) GetAppendEntriesReq(slave int) AppendEntriesReq {
@@ -58,6 +58,7 @@ func (r *Raft) AppendEntries(req AppendEntriesReq, reply *AppendEntriesReq) {
 
 func (r *Raft) SendAppendEntries(server int, req AppendEntriesReq, reply *AppendEntriseReply) bool {
 	// TODO:
+	return false
 }
 
 func (r *Raft) SendAppendEntriesRPCToPeer(slave int) {
