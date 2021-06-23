@@ -1,8 +1,10 @@
 package raft
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log"
+	"math/rand"
 )
 
 const Debug = 0
@@ -31,4 +33,12 @@ func DEBUG(format string, a ...interface{}) {
 	if Debug > 0 {
 		log.Printf(format, a...)
 	}
+}
+
+// 随机生成一个长度为n的字符串
+func RandString(n int) string {
+	b := make([]byte, 2*n)
+	rand.Read(b)
+	s := base64.URLEncoding.EncodeToString(b)
+	return s[0:n]
 }

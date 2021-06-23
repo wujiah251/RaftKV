@@ -295,3 +295,16 @@ func (r *Raft) rejectVote(req RequestVoteArgs) bool {
 	}
 	return lastLogIndex > req.LastLogIndex
 }
+
+func (rf *Raft) GetState() (int, bool) {
+
+	var term int
+	var isLeader bool
+	// Your code here.
+	rf.mutex.Lock()
+	term = rf.currentTerm
+	isLeader = rf.role == LEADER
+	rf.mutex.Unlock()
+
+	return term, isLeader
+}
