@@ -1,6 +1,9 @@
 package raft
 
-import "wujiah251/Raft/rpc"
+import (
+	"time"
+	"wujiah251/Raft/rpc"
+)
 
 // 运行相关函数
 
@@ -42,4 +45,38 @@ func (r *Raft) Kill() {
 
 func Make(peers []*rpc.ClientEnd, id int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	// TODO:
+	DEBUG("[DEBUG] Server[%v]:Start Func Make()\n", id)
+	defer DEBUG("[DEBUG] Server[%v]: End Func Make()\n", id)
+	// 初始化Raft Server
+	r := &Raft{}
+	r.peers = peers
+	r.persister = persister
+	r.id = id
+
+	r.currentTerm = 0
+	r.votedFor = -1
+	r.applyChan = applyCh
+	r.lastApplied = 0
+	r.committedIndex = 0
+
+	// 初始化log，并添加一个空的守护日志（因为log的index从1开始）
+	guideEntry := LogEntry{
+		Command: nil,
+		Term:    0,
+		Index:   0,
+	}
+	r.log = append(r.log, guideEntry)
+	r.role = FOLLOWER
+	r.leaderId = -1
+	r.ReadPersist(persister.ReadRaftState())
+
+	// 初始化选举的计时器
+	r.electionTimer = time.NewTimer(100 * time.Millisecond)
+	r.heartBeatTimer = time.NewTimer(r.GetHeartBeatInterval())
+
+	go r.ElectionLoop()
+	go r.HeartBeatLoop()
+	go r.ApplyLoop()
+
+	return r
 }

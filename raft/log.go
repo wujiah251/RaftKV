@@ -2,6 +2,7 @@ package raft
 
 import (
 	"sort"
+	"time"
 )
 
 // TODO:这个地方还没看懂
@@ -66,13 +67,49 @@ func (r *Raft) SendAppendEntriesRPCToPeer(slave int) {
 }
 
 func (r *Raft) HeartBeatLoop() {
-
+	for {
+		<-r.heartBeatTimer.C
+		// 重置心跳
+		r.ResetHeartBeatTimer()
+		r.mutex.Lock()
+		if r.role != LEADER {
+			// 不是leader，不需要完成心跳工作
+			r.mutex.Unlock()
+			continue
+		}
+		r.mutex.Unlock()
+		for slave := range r.peers {
+			if slave == r.id {
+				// 不用发给自己
+				r.nextIndex[slave] = len(r.log) + 1
+				r.matchIndex[slave] = len(r.log)
+				continue
+			} else {
+				go r.SendAppendEntriesRPCToPeer(slave)
+			}
+		}
+	}
 }
 
 func (r *Raft) Apply(index int) {
-
+	msg := ApplyMsg{
+		Index:       index,
+		Command:     r.log[index].Command,
+		UseSnapshot: false,
+		Snapshot:    nil,
+	}
+	DEBUG("[DEBUG] Server[%v](%s) apply log entry %+v", r.id, r.GetRole(), r.log[index].Command)
+	r.applyChan <- msg
 }
 
 func (r *Raft) ApplyLoop() {
-
+	for {
+		time.Sleep(10 * time.Millisecond)
+		r.mutex.Lock()
+		for r.lastApplied < r.committedIndex {
+			r.lastApplied++
+			r.Apply(r.lastApplied)
+		}
+		r.mutex.Unlock()
+	}
 }

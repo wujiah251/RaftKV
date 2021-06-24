@@ -16,10 +16,10 @@ const (
 )
 
 type ApplyMsg struct {
-	index       int
-	command     interface{}
-	useSnapshot bool
-	snapshot    []byte
+	Index       int
+	Command     interface{}
+	UseSnapshot bool
+	Snapshot    []byte
 }
 
 type LogEntry struct {

@@ -1,6 +1,8 @@
 package raft
 
 import (
+	"fmt"
+	"log"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -12,8 +14,8 @@ import (
 // 配置文件
 
 type Config struct {
-	mutex     sync.Mutex //  互斥锁
-	t         *testing.T
+	mutex     sync.Mutex    //  互斥锁
+	t         *testing.T    // 测试
 	rafts     []*Raft       // 节点列表
 	net       *rpc.Network  // 网络
 	saved     []*Persister  // 持久化
@@ -31,6 +33,27 @@ func MakeConfig(t *testing.T, n int, unreliable bool) *Config {
 	runtime.GOMAXPROCS(4)
 	cfg := &Config{}
 	cfg.t = t
+	cfg.net = rpc.MakeNetwork()
+	cfg.applyErr = make([]string, cfg.n)
+	cfg.rafts = make([]*Raft, cfg.n)
+	cfg.connected = make([]bool, cfg.n)
+	cfg.saved = make([]*Persister, cfg.n)
+	cfg.logs = make([]map[int]int, cfg.n)
+
+	cfg.SetUnreliable(unreliable)
+
+	cfg.net.LongDelays(true)
+
+	// 启动所有服务器
+	for i := 0; i < n; i++ {
+		cfg.logs[i] = map[int]int{}
+		cfg.Start(i)
+	}
+
+	// 连接所有服务器
+	for i := 0; i < cfg.n; i++ {
+		cfg.Connect(i)
+	}
 
 	return cfg
 }
@@ -99,7 +122,33 @@ func (c *Config) Start(i int) {
 	applyCh := make(chan ApplyMsg)
 	go func() {
 		for m := range applyCh {
-			// TODO:
+			errMsg := ""
+			if m.UseSnapshot {
+				// 忽视快照
+			} else if v, ok := (m.Command).(int); ok {
+				c.mutex.Lock()
+				for j := 0; j < len(c.logs); j++ {
+					if old, oldOk := c.logs[j][m.Index]; oldOk && old != v {
+						// 一些服务器已经提交一个不同的数值
+						errMsg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
+							m.Index, i, m.Command, j, old)
+					}
+				}
+				_, prevOk := c.logs[i][m.Index-1]
+				c.logs[i][m.Index] = v
+				c.mutex.Unlock()
+
+				if m.Index > 1 && prevOk == false {
+					errMsg = fmt.Sprintf("server %v apply out of order %v", i, m.Index)
+				}
+			} else {
+				errMsg = fmt.Sprintf("committed command %v is not a int", m.Command)
+			}
+
+			if errMsg != "" {
+				log.Fatalf("apply error:%v\n", errMsg)
+				c.applyErr[i] = errMsg
+			}
 		}
 	}()
 

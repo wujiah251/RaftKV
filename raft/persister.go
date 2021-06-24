@@ -65,9 +65,17 @@ func (p *Persister) ReadSnapshot() []byte {
 func (r *Raft) Persist() {
 	w := new(bytes.Buffer)
 	e := gob.NewEncoder(w)
-	e.Encode(r.currentTerm)
-	e.Encode(r.votedFor)
-	e.Encode(r.log)
+	_ = e.Encode(r.currentTerm)
+	_ = e.Encode(r.votedFor)
+	_ = e.Encode(r.log)
 	data := w.Bytes()
 	r.persister.SaveRaftState(data)
+}
+
+func (r *Raft) ReadPersist(data []byte) {
+	b := bytes.NewBuffer(data)
+	d := gob.NewDecoder(b)
+	_ = d.Decode(&r.currentTerm)
+	_ = d.Decode(&r.votedFor)
+	_ = d.Decode(&r.log)
 }
