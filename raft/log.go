@@ -31,15 +31,43 @@ func getMajoritySameIndex(matchIndex []int) int {
 	return tmp[n/2]
 }
 
+// 获取要发送给slave的日志
 func (r *Raft) GetAppendLogs(slave int) (prevLogIndex int, prevLogTerm int, entries []LogEntry) {
+	// 要发送给slave的下一个日志index
+	nextIndex := r.nextIndex[slave]
+	lastLogIndex, lastLogTerm := r.getLastLogIndexTerm()
+
+	if nextIndex <= 0 || nextIndex > lastLogIndex {
+		// 发送给slave的下一个日志index小于0
+		// 或者自己的最近的日志index落后与nextIndex
+		prevLogIndex = lastLogIndex
+		prevLogTerm = lastLogTerm
+		return
+	}
+
+	// 把nextIndex及之后的所有日志都发送给slave
+	entries = append([]LogEntry{}, r.log[nextIndex:]...)
+	prevLogIndex = nextIndex - 1
+	// TODO:没看懂
+	if prevLogIndex == 0 {
+		prevLogTerm = 0
+	} else {
+		prevLogTerm = r.log[prevLogIndex].Term
+	}
 	return
 }
 
+// 获取应该发送给slave的附加日志请求
 func (r *Raft) GetAppendEntriesReq(slave int) AppendEntriesReq {
 	// TODO:
-	// prevLogIndex, preLogTerm, entries := r.GetAppendLogs(slave)
+	prevLogIndex, preLogTerm, entries := r.GetAppendLogs(slave)
 	req := AppendEntriesReq{
-		Term: r.currentTerm,
+		Term:         r.currentTerm,
+		LeaderId:     r.id,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  preLogTerm,
+		Entries:      entries,          //要附加的日志条目
+		LeaderCommit: r.committedIndex, //Leader提交信息
 	}
 	return req
 }
@@ -57,13 +85,45 @@ func (r *Raft) AppendEntries(req AppendEntriesReq, reply *AppendEntriesReq) {
 	// TODO:
 }
 
+// 发送附加日志给server，返回RPC调用成功与否
 func (r *Raft) SendAppendEntries(server int, req AppendEntriesReq, reply *AppendEntriseReply) bool {
-	// TODO:
-	return false
+	ok := r.peers[server].Call("Raft.AppendEntries", req, reply)
+	return ok
 }
 
+// 发送添加日志给追随者slave
 func (r *Raft) SendAppendEntriesRPCToPeer(slave int) {
 	// TODO:
+	r.mutex.Lock()
+	// 不是leader则返回
+	if r.role != LEADER {
+		r.mutex.Unlock()
+		return
+	}
+	req := r.GetAppendEntriesReq(slave)
+	if len(req.Entries) > 0 {
+		DEBUG("[DEBUG] Server[%v]:(%s) sendAppendEntriesRPCToPeer send to Server[%v]", r.id, r.GetRole(), slave)
+	}
+	r.mutex.Unlock()
+	reply := AppendEntriseReply{}
+	ok := r.SendAppendEntries(slave, req, &reply)
+	if ok {
+		// RPC调用成功
+		r.mutex.Lock()
+		if reply.Term > r.currentTerm {
+			// 如果服务响应的日志大于自己，则自己成为follower
+			DEBUG("[DEBUG] Server[%v] (%s) Get reply for AppendEntries from %v, reply.Term > r.currentTerm", r.id, r.GetRole(), slave)
+			r.becomeToFollower(reply.Term)
+			r.ResetElectionTimer()
+			r.mutex.Unlock()
+			return
+		}
+
+		if r.role != LEADER || r.currentTerm != req.Term {
+			r.mutex.Unlock()
+			return
+		}
+	}
 }
 
 func (r *Raft) HeartBeatLoop() {

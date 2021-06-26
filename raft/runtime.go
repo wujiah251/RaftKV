@@ -9,6 +9,7 @@ import (
 
 // 如果server不是leader，返回false
 // 如果是leader，生成一个新的log entry，返回true
+// 将命令附加到复制日志中
 func (r *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
