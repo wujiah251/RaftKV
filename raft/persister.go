@@ -1,81 +1,61 @@
 package raft
 
-import (
-	"bytes"
-	"encoding/gob"
-	"sync"
-)
+//
+// support for Raft and kvraft to save persistent
+// Raft state (log &c) and k/v server snapshots.
+//
+// we will use the original persister.go to test your code for grading.
+// so, while you can modify this code to help you debug, please
+// test with the original before submitting.
+//
+
+import "sync"
 
 type Persister struct {
-	mutex     sync.Mutex
-	raftState []byte
+	mu        sync.Mutex
+	raftstate []byte
 	snapshot  []byte
 }
 
-// 获得一个实例
-func NewPersister() *Persister {
+func MakePersister() *Persister {
 	return &Persister{}
 }
 
-// 拷贝函数
-func (p *Persister) Copy() *Persister {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-	res := NewPersister()
-	res.raftState = p.raftState
-	res.snapshot = p.snapshot
-	return res
+func (ps *Persister) Copy() *Persister {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	np := MakePersister()
+	np.raftstate = ps.raftstate
+	np.snapshot = ps.snapshot
+	return np
 }
 
-// 保存Raft状态
-func (p *Persister) SaveRaftState(state []byte) {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-	p.raftState = state
+func (ps *Persister) SaveRaftState(data []byte) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	ps.raftstate = data
 }
 
-// 读Raft状态
-func (p *Persister) ReadRaftState() []byte {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-	return p.raftState
+func (ps *Persister) ReadRaftState() []byte {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	return ps.raftstate
 }
 
-// 获得Raft状态长度
-func (p *Persister) RaftStateSize() int {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-	return len(p.raftState)
+func (ps *Persister) RaftStateSize() int {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	return len(ps.raftstate)
 }
 
-// 保存快照信息
-func (p *Persister) SaveSnapshot(snapshot []byte) {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-	p.snapshot = snapshot
+func (ps *Persister) SaveSnapshot(snapshot []byte) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	ps.snapshot = snapshot
 }
 
-// 读取快照数据
-func (p *Persister) ReadSnapshot() []byte {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
-	return p.snapshot
-}
-
-func (r *Raft) Persist() {
-	w := new(bytes.Buffer)
-	e := gob.NewEncoder(w)
-	_ = e.Encode(r.currentTerm)
-	_ = e.Encode(r.votedFor)
-	_ = e.Encode(r.log)
-	data := w.Bytes()
-	r.persister.SaveRaftState(data)
-}
-
-func (r *Raft) ReadPersist(data []byte) {
-	b := bytes.NewBuffer(data)
-	d := gob.NewDecoder(b)
-	_ = d.Decode(&r.currentTerm)
-	_ = d.Decode(&r.votedFor)
-	_ = d.Decode(&r.log)
+func (ps *Persister) ReadSnapshot() []byte {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	return ps.snapshot
 }

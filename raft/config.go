@@ -1,6 +1,16 @@
 package raft
 
+//
+// support for Raft tester.
+//
+// we will use the original config.go to test your code for grading.
+// so, while you can modify this code to help you debug, please
+// test with the original before submitting.
+//
+
 import (
+	crand "crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"runtime"
@@ -11,281 +21,318 @@ import (
 	"wujiah251/Raft/rpc"
 )
 
-// 配置文件
-
-type Config struct {
-	mutex     sync.Mutex    //  互斥锁
-	t         *testing.T    // 测试
-	rafts     []*Raft       // 节点列表
-	net       *rpc.Network  // 网络
-	saved     []*Persister  // 持久化
-	n         int           // TODO:不知道
-	done      int32         // TODO:
-	applyErr  []string      // 来自apply Channel readers
-	connected []bool        // 每个服务器是否在网络中
-	endNames  [][]string    // port file names each sends to
-	logs      []map[int]int // 每个服务器的已提交日志的拷贝
+func randstring(n int) string {
+	b := make([]byte, 2*n)
+	crand.Read(b)
+	s := base64.URLEncoding.EncodeToString(b)
+	return s[0:n]
 }
 
-// 创建一个配置中心
-func MakeConfig(t *testing.T, n int, unreliable bool) *Config {
-	// 设置逻辑CPU数量
+type config struct {
+	mu        sync.Mutex
+	t         *testing.T
+	net       *rpc.Network
+	n         int
+	done      int32 // tell internal threads to die
+	rafts     []*Raft
+	applyErr  []string // from apply channel readers
+	connected []bool   // whether each server is on the net
+	saved     []*Persister
+	endnames  [][]string    // the port file names each sends to
+	logs      []map[int]int // copy of each server's committed entries
+}
+
+func make_config(t *testing.T, n int, unreliable bool) *config {
 	runtime.GOMAXPROCS(4)
-	cfg := &Config{}
+	cfg := &config{}
 	cfg.t = t
 	cfg.net = rpc.MakeNetwork()
+	cfg.n = n
 	cfg.applyErr = make([]string, cfg.n)
 	cfg.rafts = make([]*Raft, cfg.n)
 	cfg.connected = make([]bool, cfg.n)
 	cfg.saved = make([]*Persister, cfg.n)
+	cfg.endnames = make([][]string, cfg.n)
 	cfg.logs = make([]map[int]int, cfg.n)
 
-	cfg.SetUnreliable(unreliable)
+	cfg.setunreliable(unreliable)
 
 	cfg.net.LongDelays(true)
 
-	// 启动所有服务器
-	for i := 0; i < n; i++ {
+	// create a full set of Rafts.
+	for i := 0; i < cfg.n; i++ {
 		cfg.logs[i] = map[int]int{}
-		cfg.Start(i)
+		cfg.start1(i)
 	}
 
-	// 连接所有服务器
+	// connect everyone
 	for i := 0; i < cfg.n; i++ {
-		cfg.Connect(i)
+		cfg.connect(i)
 	}
 
 	return cfg
 }
 
-// 关闭一个节点，但是保存其持久化状态
-func (c *Config) Shutdown(i int) {
-	// 断开连接
-	c.DisConnect(i)
-	// 删除服务器，关闭客户端到服务器的连接
-	c.net.DeleteServer(i)
+// shut down a Raft server but save its persistent state.
+func (cfg *config) crash1(i int) {
+	cfg.disconnect(i)
+	cfg.net.DeleteServer(i) // disable client connections to the server.
 
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	cfg.mu.Lock()
+	defer cfg.mu.Unlock()
 
-	// 持久化,TODO:不懂
-	if c.saved[i] != nil {
-		c.saved[i] = c.saved[i].Copy()
+	// a fresh persister, in case old instance
+	// continues to update the Persister.
+	// but copy old persister's content so that we always
+	// pass Make() the last persisted state.
+	if cfg.saved[i] != nil {
+		cfg.saved[i] = cfg.saved[i].Copy()
 	}
 
-	r := c.rafts[i]
-	if r != nil {
-		// TODO:不知道为什么要解锁
-		c.mutex.Unlock()
-		r.Kill()
-		c.mutex.Lock()
-		c.rafts[i] = nil
+	rf := cfg.rafts[i]
+	if rf != nil {
+		cfg.mu.Unlock()
+		rf.Kill()
+		cfg.mu.Lock()
+		cfg.rafts[i] = nil
 	}
 
-	if c.saved[i] != nil {
-		raftLog := c.saved[i].ReadRaftState()
-		c.saved[i] = &Persister{}
-		c.saved[i].SaveRaftState(raftLog)
-	}
-}
-
-// 启动一个server，或者说重启一个server
-// 如果它已经存在，那就先kill
-// 分配一个port给它
-// 分配一个persister
-func (c *Config) Start(i int) {
-	c.Shutdown(i)
-
-	c.endNames[i] = make([]string, c.n)
-	for j := 0; j < c.n; j++ {
-		// 生成端口
-		c.endNames[i][j] = RandString(20)
-	}
-
-	// 为server创建客户端
-	ends := make([]*rpc.ClientEnd, c.n)
-	for j := 0; j < c.n; j++ {
-		// 创建一个客户端
-		ends[j] = c.net.MakeEnd(c.endNames[i][j])
-		c.net.Connect(c.endNames[i][j], j)
-	}
-
-	c.mutex.Lock()
-	if c.saved[i] != nil {
-		c.saved[i] = c.saved[i].Copy()
-	} else {
-		c.saved[i] = NewPersister()
-	}
-	c.mutex.Unlock()
-
-	// 日志成功提交返回一个ApplyMsg
-	applyCh := make(chan ApplyMsg)
-	go func() {
-		for m := range applyCh {
-			errMsg := ""
-			if m.UseSnapshot {
-				// 忽视快照
-			} else if v, ok := (m.Command).(int); ok {
-				c.mutex.Lock()
-				for j := 0; j < len(c.logs); j++ {
-					if old, oldOk := c.logs[j][m.Index]; oldOk && old != v {
-						// 一些服务器已经提交一个不同的数值
-						errMsg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
-							m.Index, i, m.Command, j, old)
-					}
-				}
-				_, prevOk := c.logs[i][m.Index-1]
-				c.logs[i][m.Index] = v
-				c.mutex.Unlock()
-
-				if m.Index > 1 && prevOk == false {
-					errMsg = fmt.Sprintf("server %v apply out of order %v", i, m.Index)
-				}
-			} else {
-				errMsg = fmt.Sprintf("committed command %v is not a int", m.Command)
-			}
-
-			if errMsg != "" {
-				log.Fatalf("apply error:%v\n", errMsg)
-				c.applyErr[i] = errMsg
-			}
-		}
-	}()
-
-	// 创建一个Raft实例
-	r := Make(ends, i, c.saved[i], applyCh)
-	c.mutex.Lock()
-	c.rafts[i] = r
-	c.mutex.Unlock()
-
-	// 创建一个服务（R对于配置中心而言）
-	service := rpc.MakeService(r)
-	// 创建一个服务器
-	server := rpc.MakeServer()
-
-	server.AddService(service)
-	c.net.AddServer(i, server)
-}
-
-func (c *Config) CleanUp() {
-	for i := 0; i < len(c.rafts); i++ {
-		if c.rafts[i] != nil {
-			c.rafts[i].Kill()
-		}
-	}
-	atomic.StoreInt32(&c.done, 1)
-}
-
-// 连接一个节点
-func (c *Config) Connect(i int) {
-	c.connected[i] = true
-
-	for j := 0; j < c.n; j++ {
-		if c.connected[j] {
-			endName := c.endNames[i][j]
-			c.net.Enable(endName, true)
-		}
-	}
-	for j := 0; j < c.n; j++ {
-		if c.connected[j] {
-			endName := c.endNames[j][i]
-			c.net.Enable(endName, true)
-		}
-	}
-}
-
-// 和一个节点断开连接
-func (c *Config) DisConnect(i int) {
-	c.connected[i] = false
-	for j := 0; j < c.n; j++ {
-		if c.endNames[i] != nil {
-			endName := c.endNames[i][j]
-			c.net.Enable(endName, false)
-		}
-	}
-
-	for j := 0; j < c.n; j++ {
-		if c.endNames[i] != nil {
-			endName := c.endNames[j][i]
-			c.net.Enable(endName, false)
-		}
+	if cfg.saved[i] != nil {
+		raftlog := cfg.saved[i].ReadRaftState()
+		cfg.saved[i] = &Persister{}
+		cfg.saved[i].SaveRaftState(raftlog)
 	}
 }
 
 //
-func (c *Config) RpcCount(server int) int {
-	return c.net.GetCount(server)
+// start or re-start a Raft.
+// if one already exists, "kill" it first.
+// allocate new outgoing port file names, and a new
+// state persister, to isolate previous instance of
+// this server. since we cannot really kill it.
+//
+func (cfg *config) start1(i int) {
+	cfg.crash1(i)
+
+	// a fresh set of outgoing ClientEnd names.
+	// so that old crashed instance's ClientEnds can't send.
+	cfg.endnames[i] = make([]string, cfg.n)
+	for j := 0; j < cfg.n; j++ {
+		cfg.endnames[i][j] = randstring(20)
+	}
+
+	// a fresh set of ClientEnds.
+	ends := make([]*rpc.ClientEnd, cfg.n)
+	for j := 0; j < cfg.n; j++ {
+		ends[j] = cfg.net.MakeEnd(cfg.endnames[i][j])
+		cfg.net.Connect(cfg.endnames[i][j], j)
+	}
+
+	cfg.mu.Lock()
+
+	// a fresh persister, so old instance doesn't overwrite
+	// new instance's persisted state.
+	// but copy old persister's content so that we always
+	// pass Make() the last persisted state.
+	if cfg.saved[i] != nil {
+		cfg.saved[i] = cfg.saved[i].Copy()
+	} else {
+		cfg.saved[i] = MakePersister()
+	}
+
+	cfg.mu.Unlock()
+
+	// listen to messages from Raft indicating newly committed messages.
+	applyCh := make(chan ApplyMsg)
+	go func() {
+		for m := range applyCh {
+			err_msg := ""
+			if m.UseSnapshot {
+				// ignore the snapshot
+			} else if v, ok := (m.Command).(int); ok {
+				cfg.mu.Lock()
+				for j := 0; j < len(cfg.logs); j++ {
+					if old, oldok := cfg.logs[j][m.Index]; oldok && old != v {
+						// some server has already committed a different value for this entry!
+						err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
+							m.Index, i, m.Command, j, old)
+					}
+				}
+				_, prevok := cfg.logs[i][m.Index-1]
+				cfg.logs[i][m.Index] = v
+				cfg.mu.Unlock()
+
+				if m.Index > 1 && prevok == false {
+					err_msg = fmt.Sprintf("server %v apply out of order %v", i, m.Index)
+				}
+			} else {
+				err_msg = fmt.Sprintf("committed command %v is not an int", m.Command)
+			}
+
+			if err_msg != "" {
+				log.Fatalf("apply error: %v\n", err_msg)
+				cfg.applyErr[i] = err_msg
+				// keep reading after error so that Raft doesn't block
+				// holding locks...
+			}
+		}
+	}()
+
+	rf := Make(ends, i, cfg.saved[i], applyCh)
+
+	cfg.mu.Lock()
+	cfg.rafts[i] = rf
+	cfg.mu.Unlock()
+
+	svc := rpc.MakeService(rf)
+	srv := rpc.MakeServer()
+	srv.AddService(svc)
+	cfg.net.AddServer(i, srv)
 }
 
-// TODO:
-func (c *Config) SetUnreliable(unrel bool) {
-	c.net.Reliable(!unrel)
+func (cfg *config) cleanup() {
+	for i := 0; i < len(cfg.rafts); i++ {
+		if cfg.rafts[i] != nil {
+			cfg.rafts[i].Kill()
+		}
+	}
+	atomic.StoreInt32(&cfg.done, 1)
 }
 
-func (c *Config) SetLongReordering(longrel bool) {
-	c.net.LongReordering(longrel)
+// attach server i to the net.
+func (cfg *config) connect(i int) {
+	// fmt.Printf("connect(%d)\n", i)
+
+	cfg.connected[i] = true
+
+	// outgoing ClientEnds
+	for j := 0; j < cfg.n; j++ {
+		if cfg.connected[j] {
+			endname := cfg.endnames[i][j]
+			cfg.net.Enable(endname, true)
+		}
+	}
+
+	// incoming ClientEnds
+	for j := 0; j < cfg.n; j++ {
+		if cfg.connected[j] {
+			endname := cfg.endnames[j][i]
+			cfg.net.Enable(endname, true)
+		}
+	}
 }
 
-// 检查是否存在一个leader
-func (c *Config) CheckOneLeader() int {
+// detach server i from the net.
+func (cfg *config) disconnect(i int) {
+	// fmt.Printf("disconnect(%d)\n", i)
+
+	cfg.connected[i] = false
+
+	// outgoing ClientEnds
+	for j := 0; j < cfg.n; j++ {
+		if cfg.endnames[i] != nil {
+			endname := cfg.endnames[i][j]
+			cfg.net.Enable(endname, false)
+		}
+	}
+
+	// incoming ClientEnds
+	for j := 0; j < cfg.n; j++ {
+		if cfg.endnames[j] != nil {
+			endname := cfg.endnames[j][i]
+			cfg.net.Enable(endname, false)
+		}
+	}
+}
+
+func (cfg *config) rpcCount(server int) int {
+	return cfg.net.GetCount(server)
+}
+
+func (cfg *config) setunreliable(unrel bool) {
+	cfg.net.Reliable(!unrel)
+}
+
+func (cfg *config) setlongreordering(longrel bool) {
+	cfg.net.LongReordering(longrel)
+}
+
+// check that there's exactly one leader.
+// try a few times in case re-elections are needed.
+func (cfg *config) checkOneLeader() int {
 	for iters := 0; iters < 10; iters++ {
 		time.Sleep(500 * time.Millisecond)
-		// key:term
-		// value: list of leaders
 		leaders := make(map[int][]int)
-		for i := 0; i < c.n; i++ {
-			if c.connected[i] {
-				if term, leader := c.rafts[i].GetState(); leader {
-					leaders[term] = append(leaders[term], i)
+		for i := 0; i < cfg.n; i++ {
+			if cfg.connected[i] {
+				if t, leader := cfg.rafts[i].GetState(); leader {
+					leaders[t] = append(leaders[t], i)
 				}
 			}
 		}
 
-		// 最新的时期
 		lastTermWithLeader := -1
-		for term, leaders := range leaders {
+		for t, leaders := range leaders {
 			if len(leaders) > 1 {
-				c.t.Fatalf("term %d has %d (>1) leaders", term, len(leaders))
+				cfg.t.Fatalf("term %d has %d (>1) leaders", t, len(leaders))
 			}
-			if term > lastTermWithLeader {
-				lastTermWithLeader = term
+			if t > lastTermWithLeader {
+				lastTermWithLeader = t
 			}
 		}
+
 		if len(leaders) != 0 {
 			return leaders[lastTermWithLeader][0]
 		}
 	}
-	c.t.Fatalf("expected one leader, got none")
+	cfg.t.Fatalf("expected one leader, got none")
 	return -1
 }
 
-// 检查没有leader
-func (c *Config) CheckNoLeader() {
-	for i := 0; i < c.n; i++ {
-		if c.connected[i] {
-			_, isLeader := c.rafts[i].GetState()
-			if isLeader {
-				c.t.Fatalf("expected no leader, but %v claims to be leader", i)
+// check that everyone agrees on the term.
+func (cfg *config) checkTerms() int {
+	term := -1
+	for i := 0; i < cfg.n; i++ {
+		if cfg.connected[i] {
+			xterm, _ := cfg.rafts[i].GetState()
+			if term == -1 {
+				term = xterm
+			} else if term != xterm {
+				cfg.t.Fatalf("servers disagree on term")
+			}
+		}
+	}
+	return term
+}
+
+// check that there's no leader
+func (cfg *config) checkNoLeader() {
+	for i := 0; i < cfg.n; i++ {
+		if cfg.connected[i] {
+			_, is_leader := cfg.rafts[i].GetState()
+			if is_leader {
+				cfg.t.Fatalf("expected no leader, but %v claims to be leader", i)
 			}
 		}
 	}
 }
 
-// 获得认为一个log已经持久化了的服务器的个数
-func (c *Config) CountCommitted(index int) (int, interface{}) {
+// how many servers think a log entry is committed?
+func (cfg *config) nCommitted(index int) (int, interface{}) {
 	count := 0
 	cmd := -1
-	for i := 0; i < len(c.rafts); i++ {
-		if c.applyErr[i] != "" {
-			c.t.Fatalf(c.applyErr[i])
+	for i := 0; i < len(cfg.rafts); i++ {
+		if cfg.applyErr[i] != "" {
+			cfg.t.Fatal(cfg.applyErr[i])
 		}
 
-		c.mutex.Lock()
-		cmd1, ok := c.logs[i][index]
-		c.mutex.Unlock()
+		cfg.mu.Lock()
+		cmd1, ok := cfg.logs[i][index]
+		cfg.mu.Unlock()
+
 		if ok {
 			if count > 0 && cmd != cmd1 {
-				c.t.Fatalf("committed values do not match: index %v, %v, %v\n",
+				cfg.t.Fatalf("committed values do not match: index %v, %v, %v\n",
 					index, cmd, cmd1)
 			}
 			count += 1
@@ -295,52 +342,61 @@ func (c *Config) CountCommitted(index int) (int, interface{}) {
 	return count, cmd
 }
 
-// 等待至少n个服务器commit
-func (c *Config) Wait(index int, n int, startTerm int) interface{} {
+// wait for at least n servers to commit.
+// but don't wait forever.
+func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 	to := 10 * time.Millisecond
 	for iters := 0; iters < 30; iters++ {
-		curNumber, _ := c.CountCommitted(index)
-		if curNumber >= n {
+		nd, _ := cfg.nCommitted(index)
+		if nd >= n {
 			break
 		}
 		time.Sleep(to)
 		if to < time.Second {
-			// 每次等待时间翻倍
 			to *= 2
 		}
 		if startTerm > -1 {
-			for _, r := range c.rafts {
+			for _, r := range cfg.rafts {
 				if t, _ := r.GetState(); t > startTerm {
+					// someone has moved on
+					// can no longer guarantee that we'll "win"
 					return -1
 				}
 			}
 		}
 	}
-	curNumber, cmd := c.CountCommitted(index)
-	if curNumber < n {
-		c.t.Fatalf("only %d decided for index %d; wanted %d\n",
-			curNumber, index, n)
+	nd, cmd := cfg.nCommitted(index)
+	if nd < n {
+		cfg.t.Fatalf("only %d decided for index %d; wanted %d\n",
+			nd, index, n)
 	}
 	return cmd
 }
 
-// 执行一次命令
-// cmd就是命令，expectedServers是期望提交的server数量
-func (c *Config) One(cmd int, expectedServers int) int {
+// do a complete agreement.
+// it might choose the wrong leader initially,
+// and have to re-submit after giving up.
+// entirely gives up after about 10 seconds.
+// indirectly checks that the servers agree on the
+// same value, since nCommitted() checks this,
+// as do the threads that read from applyCh.
+// returns index.
+func (cfg *config) one(cmd int, expectedServers int) int {
 	t0 := time.Now()
 	starts := 0
 	for time.Since(t0).Seconds() < 10 {
+		// try all the servers, maybe one is the leader.
 		index := -1
-		for i := 0; i < c.n; i++ {
-			starts = (starts + 1) % c.n
-			var r *Raft
-			c.mutex.Lock()
-			if c.connected[starts] {
-				r = c.rafts[starts]
+		for si := 0; si < cfg.n; si++ {
+			starts = (starts + 1) % cfg.n
+			var rf *Raft
+			cfg.mu.Lock()
+			if cfg.connected[starts] {
+				rf = cfg.rafts[starts]
 			}
-			c.mutex.Unlock()
-			if r != nil {
-				index1, _, ok := r.Start(cmd)
+			cfg.mu.Unlock()
+			if rf != nil {
+				index1, _, ok := rf.Start(cmd)
 				if ok {
 					index = index1
 					break
@@ -349,20 +405,24 @@ func (c *Config) One(cmd int, expectedServers int) int {
 		}
 
 		if index != -1 {
+			// somebody claimed to be the leader and to have
+			// submitted our command; wait a while for agreement.
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
-				count, cmd1 := c.CountCommitted(index)
-				if count > 0 && count >= expectedServers {
+				nd, cmd1 := cfg.nCommitted(index)
+				if nd > 0 && nd >= expectedServers {
+					// committed
 					if cmd2, ok := cmd1.(int); ok && cmd2 == cmd {
+						// and it was the command we submitted.
 						return index
 					}
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
 		} else {
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
-	// TODO:
+	cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
 	return -1
 }

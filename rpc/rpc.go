@@ -3,7 +3,6 @@ package rpc
 import (
 	"bytes"
 	"encoding/gob"
-	"fmt"
 	"log"
 	"math/rand"
 	"reflect"
@@ -387,7 +386,7 @@ func MakeService(rcvr interface{}) *Service {
 			mtype.In(2).Kind() != reflect.Ptr ||
 			mtype.NumOut() != 0 {
 			// the method is not suitable for a handler
-			fmt.Printf("bad method: %v\n", mname)
+			// fmt.Printf("bad method: %v\n", mname)
 		} else {
 			// the method looks like a handler
 			svc.methods[mname] = method
