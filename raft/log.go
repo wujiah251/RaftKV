@@ -5,7 +5,13 @@ import (
 	"time"
 )
 
-// TODO:这个地方还没看懂
+// AppendLog失败后是否需要回退
+// 最后，额外定义一个特殊值Backoff用于日志的追加发生异常时的处理
+const (
+	BackOff = -100
+)
+
+// 向其他sercer请求添加Log Entry的Request结构
 type AppendEntriesReq struct {
 	Term         int        // 领导者的term
 	LeaderId     int        // 领导者的ID，
@@ -15,10 +21,11 @@ type AppendEntriesReq struct {
 	LeaderCommit int        // 领导者的commitIndex
 }
 
-type AppendEntriseReply struct {
+type AppendEntriesReply struct {
 	// TODO:用户数据
-	Term int // 时期
-
+	Term      int  // 时期
+	Success   bool // 如果追随者包含有匹配preLogIndex和prevLogTerm的entry
+	NextIndex int  // 下一个要append的Index，根据AppendEntries的情况来判断
 }
 
 // 日志相关函数定义
@@ -81,14 +88,52 @@ func (r *Raft) GetNextIndex() int {
 	return nextIndex
 }
 
-func (r *Raft) AppendEntries(req AppendEntriesReq, reply *AppendEntriesReq) {
+func (r *Raft) AppendEntries(req AppendEntriesReq, reply *AppendEntriesReply) {
 	// TODO:
-}
+	r.mutex.Lock()
+	defer r.Persist()
+	defer r.mutex.Unlock()
 
-// 发送附加日志给server，返回RPC调用成功与否
-func (r *Raft) SendAppendEntries(server int, req AppendEntriesReq, reply *AppendEntriseReply) bool {
-	ok := r.peers[server].Call("Raft.AppendEntries", req, reply)
-	return ok
+	// 初始化
+	reply.Success = false
+	reply.Term = r.currentTerm
+
+	// 拒绝Term小于自己的节点的Append请求
+	if r.currentTerm > req.Term {
+		DEBUG("[DEBUG] Server[%v]:(%s) Reject AppendEntries due to currentTerm > req.Term", r.id, r.GetRole())
+		return
+	}
+	// 判断心跳是否来自leader
+	if len(req.Entries) == 0 {
+		DEBUG("[DEBUG] Server[%v]:(%s, Term:%v) Get Heart Beats from %v", r.id, r.GetRole(), r.currentTerm, req.LeaderId)
+	}
+
+	r.currentTerm = req.Term
+	r.becomeToFollower(req.Term)
+	r.ResetElectionTimer() // 收到了有效的Leader的消息，重置选举的定时器
+
+	// r.log[req.PrevLogIndex]有没有内容，即上一个应该同步的位置
+	lastLogIndex, _ := r.getLastLogIndexTerm()
+	if req.PrevLogIndex > lastLogIndex {
+		DEBUG("[DEBUG] Server[%v]:(%s) Reject AppendEntries due to lastLogIndex < req.PrevLogIndex", r.id, r.GetRole())
+		reply.NextIndex = r.GetNextIndex()
+		return
+	} else if r.log[req.PrevLogIndex].Term != req.PrevLogTerm {
+		DEBUG("[DEBUG] Server[%v]:(%s) Previous log entries do not match", r.id, r.GetRole())
+		reply.NextIndex = BackOff
+	} else {
+		reply.Success = true
+		r.log = append(r.log[0:req.PrevLogIndex+1], req.Entries...)
+	}
+
+	if reply.Success {
+		r.leaderId = req.LeaderId
+		if req.LeaderCommit > r.committedIndex {
+			lastLogIndex, _ := r.getLastLogIndexTerm()
+			r.committedIndex = min(req.LeaderCommit, lastLogIndex)
+			DEBUG("[DEBUG] Server[%v]:(%s) Follower Update commitIndex, lastLogIndex is %v", r.id, r.GetRole(), lastLogIndex)
+		}
+	}
 }
 
 // 发送添加日志给追随者slave
@@ -105,7 +150,8 @@ func (r *Raft) SendAppendEntriesRPCToPeer(slave int) {
 		DEBUG("[DEBUG] Server[%v]:(%s) sendAppendEntriesRPCToPeer send to Server[%v]", r.id, r.GetRole(), slave)
 	}
 	r.mutex.Unlock()
-	reply := AppendEntriseReply{}
+	reply := AppendEntriesReply{}
+	// RPC
 	ok := r.SendAppendEntries(slave, req, &reply)
 	if ok {
 		// RPC调用成功
@@ -123,9 +169,38 @@ func (r *Raft) SendAppendEntriesRPCToPeer(slave int) {
 			r.mutex.Unlock()
 			return
 		}
+
+		DEBUG("[DEBUG] Server[%v] (%s) Get reply for AppendEntries from %v, reply.Term <= r.currentTerm, reply is %+v", r.id, r.GetRole(), slave, reply)
+		if reply.Success {
+			lenEntry := len(req.Entries)
+			// 已经匹配的日志条目索引
+			r.matchIndex[slave] = req.PrevLogIndex + lenEntry
+			r.nextIndex[slave] = r.matchIndex[slave] + 1
+			DEBUG("[DEBUG] Server[%v] (%s): matchIndex[%v] is %v", r.id, r.GetRole(), slave, r.matchIndex[slave])
+			majorityIndex := getMajoritySameIndex(r.matchIndex)
+			if r.log[majorityIndex].Term == r.currentTerm && majorityIndex > r.committedIndex {
+				r.committedIndex = majorityIndex
+				DEBUG("[DEBUG] Server[%v](%s):Update commitIndex to %v", r.id, r.GetRole(), r.committedIndex)
+			}
+		} else {
+			// 失败
+			DEBUG("[DEBUG] Server[%v] (%s): append to Server[%v]Success is False, reply is %+v", r.id, r.GetRole(), slave, &reply)
+			if reply.NextIndex > 0 {
+				r.nextIndex[slave] = reply.NextIndex
+			} else if reply.NextIndex == BackOff {
+				// 直接后退一个term
+				prevIndex := req.PrevLogIndex
+				if prevIndex > 0 && r.log[prevIndex].Term == req.PrevLogTerm {
+					prevIndex--
+				}
+				r.nextIndex[slave] = prevIndex + 1
+			}
+		}
+		r.mutex.Unlock()
 	}
 }
 
+// 心跳循环
 func (r *Raft) HeartBeatLoop() {
 	for {
 		<-r.heartBeatTimer.C
@@ -138,6 +213,8 @@ func (r *Raft) HeartBeatLoop() {
 			continue
 		}
 		r.mutex.Unlock()
+
+		// 发送日志给slave
 		for slave := range r.peers {
 			if slave == r.id {
 				// 不用发给自己
@@ -151,6 +228,7 @@ func (r *Raft) HeartBeatLoop() {
 	}
 }
 
+// 应用一条日志到状态机，然后添加消息到管道里面
 func (r *Raft) Apply(index int) {
 	msg := ApplyMsg{
 		Index:       index,

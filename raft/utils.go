@@ -42,3 +42,11 @@ func RandString(n int) string {
 	s := base64.URLEncoding.EncodeToString(b)
 	return s[0:n]
 }
+
+func min(a int, b int) (res int) {
+	if a < b {
+		return a
+	} else {
+		return b
+	}
+}

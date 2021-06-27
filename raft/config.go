@@ -173,7 +173,6 @@ func (c *Config) CleanUp() {
 			c.rafts[i].Kill()
 		}
 	}
-	// TODO:
 	atomic.StoreInt32(&c.done, 1)
 }
 
@@ -181,14 +180,12 @@ func (c *Config) CleanUp() {
 func (c *Config) Connect(i int) {
 	c.connected[i] = true
 
-	// TODO:
 	for j := 0; j < c.n; j++ {
 		if c.connected[j] {
 			endName := c.endNames[i][j]
 			c.net.Enable(endName, true)
 		}
 	}
-	// TODO:
 	for j := 0; j < c.n; j++ {
 		if c.connected[j] {
 			endName := c.endNames[j][i]
@@ -200,8 +197,6 @@ func (c *Config) Connect(i int) {
 // 和一个节点断开连接
 func (c *Config) DisConnect(i int) {
 	c.connected[i] = false
-
-	// TODO:
 	for j := 0; j < c.n; j++ {
 		if c.endNames[i] != nil {
 			endName := c.endNames[i][j]
@@ -209,10 +204,9 @@ func (c *Config) DisConnect(i int) {
 		}
 	}
 
-	// TODO:
 	for j := 0; j < c.n; j++ {
 		if c.endNames[i] != nil {
-			endName := c.endNames[i][j]
+			endName := c.endNames[j][i]
 			c.net.Enable(endName, false)
 		}
 	}
@@ -251,7 +245,7 @@ func (c *Config) CheckOneLeader() int {
 		lastTermWithLeader := -1
 		for term, leaders := range leaders {
 			if len(leaders) > 1 {
-				// TODO:
+				c.t.Fatalf("term %d has %d (>1) leaders", term, len(leaders))
 			}
 			if term > lastTermWithLeader {
 				lastTermWithLeader = term
@@ -261,7 +255,7 @@ func (c *Config) CheckOneLeader() int {
 			return leaders[lastTermWithLeader][0]
 		}
 	}
-	// TODO:
+	c.t.Fatalf("expected one leader, got none")
 	return -1
 }
 
@@ -271,7 +265,7 @@ func (c *Config) CheckNoLeader() {
 		if c.connected[i] {
 			_, isLeader := c.rafts[i].GetState()
 			if isLeader {
-				// TODO:
+				c.t.Fatalf("expected no leader, but %v claims to be leader", i)
 			}
 		}
 	}
@@ -283,7 +277,7 @@ func (c *Config) CountCommitted(index int) (int, interface{}) {
 	cmd := -1
 	for i := 0; i < len(c.rafts); i++ {
 		if c.applyErr[i] != "" {
-			// TODO:
+			c.t.Fatalf(c.applyErr[i])
 		}
 
 		c.mutex.Lock()
@@ -291,7 +285,8 @@ func (c *Config) CountCommitted(index int) (int, interface{}) {
 		c.mutex.Unlock()
 		if ok {
 			if count > 0 && cmd != cmd1 {
-				// TODO:
+				c.t.Fatalf("committed values do not match: index %v, %v, %v\n",
+					index, cmd, cmd1)
 			}
 			count += 1
 			cmd = cmd1
@@ -323,7 +318,8 @@ func (c *Config) Wait(index int, n int, startTerm int) interface{} {
 	}
 	curNumber, cmd := c.CountCommitted(index)
 	if curNumber < n {
-		// TODO:
+		c.t.Fatalf("only %d decided for index %d; wanted %d\n",
+			curNumber, index, n)
 	}
 	return cmd
 }

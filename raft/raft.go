@@ -238,7 +238,7 @@ func (r *Raft) ElectionLoop() {
 			r.mutex.Unlock()
 			continue
 		}
-
+		// 自己尝试成为候选者
 		if r.role == FOLLOWER || r.role == CANDIDATE {
 			// TODO:不用判断Leader存不存在吗
 			// 成为候选者，发起一次投票
