@@ -38,6 +38,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 func (rf *Raft) Kill() {
+
 }
 
 // 创建一个Raft实例
