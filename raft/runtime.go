@@ -2,7 +2,7 @@ package raft
 
 import (
 	"time"
-	"wujiah251/Raft/rpc"
+	"wujiah251/RaftKV/rpc"
 )
 
 /*==========================================

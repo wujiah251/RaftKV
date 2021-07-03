@@ -1,7 +1,7 @@
 package raft
 
 //
-// support for Raft and kvraft to save persistent
+// support for Raft and kv to save persistent
 // Raft state (log &c) and k/v server snapshots.
 //
 // we will use the original persister.go to test your code for grading.

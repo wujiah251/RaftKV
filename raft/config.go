@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"wujiah251/Raft/rpc"
+	"wujiah251/RaftKV/rpc"
 )
 
 func randstring(n int) string {
