@@ -21,8 +21,10 @@ import (
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
 
+// 测试初始化选举
 func TestInitialElection(t *testing.T) {
 	servers := 3
+	// 创建配置中心
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
@@ -31,9 +33,10 @@ func TestInitialElection(t *testing.T) {
 	// is a leader elected?
 	cfg.checkOneLeader()
 
-	// does the leader+term stay the same there is no failure?
+	// 检查所有节点是否都在同一个时期
 	term1 := cfg.checkTerms()
 	time.Sleep(2 * RaftElectionTimeout)
+	// 检查所有节点是否都在同一个时期
 	term2 := cfg.checkTerms()
 	if term1 != term2 {
 		fmt.Printf("warning: term changed even though there were no failures")
@@ -42,96 +45,93 @@ func TestInitialElection(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
+// 测试重新选举
 func TestReElection(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
 	fmt.Printf("Test: election after network failure ...\n")
-
+	// 检查是否只有一个leader
 	leader1 := cfg.checkOneLeader()
-
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
+	// 检查是否有leader被选举出来
 	cfg.checkOneLeader()
-
-	// if the old leader rejoins, that shouldn't
-	// disturb the old leader.
+	// 连接老leader
 	cfg.connect(leader1)
+	// 获得新的leader
 	leader2 := cfg.checkOneLeader()
-
-	// if there's no quorum, no leader should
-	// be elected.
+	// 下线新leader
+	// 下线老的leader2
 	cfg.disconnect(leader2)
+	// 下线leader2下一个服务器
 	cfg.disconnect((leader2 + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
+	// 检查是否没有leader，因为下线了两个server，无法选举出leader
 	cfg.checkNoLeader()
-
-	// if a quorum arises, it should elect a leader.
+	// 网络中加入一个server
 	cfg.connect((leader2 + 1) % servers)
+	// 选举出leader
 	cfg.checkOneLeader()
-
-	// re-join of last node shouldn't prevent leader from existing.
+	// 重新加入leader2
 	cfg.connect(leader2)
+	// 检查选举出leader了吗
 	cfg.checkOneLeader()
-
 	fmt.Printf("  ... Passed\n")
 }
 
+// 测试提交
 func TestBasicAgree(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
-
 	fmt.Printf("Test: basic agreement ...\n")
-
 	iters := 3
 	for index := 1; index < iters+1; index++ {
+		// 获取同意index的数量
 		nd, _ := cfg.nCommitted(index)
 		if nd > 0 {
 			t.Fatalf("some have committed before Start()")
 		}
-
+		// 执行一次命令，并等待全部提交
 		xindex := cfg.one(index*100, servers)
 		if xindex != index {
 			t.Fatalf("got index %v but expected %v", xindex, index)
 		}
 	}
-
 	fmt.Printf("  ... Passed\n")
 }
 
+// 测试有节点下线后重新提交
 func TestFailAgree(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
-
 	fmt.Printf("Test: agreement despite follower failure ...\n")
-
+	// 执行一次命令等待全部提交
 	cfg.one(101, servers)
-
+	// 检查是否有leader
 	// follower network failure
 	leader := cfg.checkOneLeader()
+	// 将一个server下掉
 	cfg.disconnect((leader + 1) % servers)
-
-	// agree despite one failed server?
+	// 执行多个次命令等待全部提交
 	cfg.one(102, servers-1)
 	cfg.one(103, servers-1)
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(104, servers-1)
 	cfg.one(105, servers-1)
-
-	// failed server re-connected
+	// 恢复连接
 	cfg.connect((leader + 1) % servers)
-
-	// agree with full set of servers?
+	// 只想一次命令，等待全部提交
 	cfg.one(106, servers)
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(107, servers)
-
 	fmt.Printf("  ... Passed\n")
 }
 
+// 测试不同意
 func TestFailNoAgree(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
@@ -147,6 +147,7 @@ func TestFailNoAgree(t *testing.T) {
 	cfg.disconnect((leader + 2) % servers)
 	cfg.disconnect((leader + 3) % servers)
 
+	// leaders执行一次命令
 	index, _, ok := cfg.rafts[leader].Start(20)
 	if ok != true {
 		t.Fatalf("leader rejected Start()")
@@ -156,20 +157,17 @@ func TestFailNoAgree(t *testing.T) {
 	}
 
 	time.Sleep(2 * RaftElectionTimeout)
-
+	// 获取提交到index的数量
 	n, _ := cfg.nCommitted(index)
 	if n > 0 {
 		t.Fatalf("%v committed but no majority", n)
 	}
 
-	// repair failures
+	// 上线之前下线的服务器
 	cfg.connect((leader + 1) % servers)
 	cfg.connect((leader + 2) % servers)
 	cfg.connect((leader + 3) % servers)
 
-	// the disconnected majority may have chosen a leader from
-	// among their own ranks, forgetting index 2.
-	// or perhaps
 	leader2 := cfg.checkOneLeader()
 	index2, _, ok2 := cfg.rafts[leader2].Start(30)
 	if ok2 == false {
@@ -178,7 +176,7 @@ func TestFailNoAgree(t *testing.T) {
 	if index2 < 2 || index2 > 3 {
 		t.Fatalf("unexpected index %v", index2)
 	}
-
+	// 执行一次命令
 	cfg.one(1000, servers)
 
 	fmt.Printf("  ... Passed\n")
@@ -198,8 +196,9 @@ loop:
 			// give solution some time to settle
 			time.Sleep(3 * time.Second)
 		}
-
+		// 检查是否有leader
 		leader := cfg.checkOneLeader()
+		// 对leader执行一次命令
 		_, term, ok := cfg.rafts[leader].Start(1)
 		if !ok {
 			// leader moved on really quickly
@@ -289,11 +288,8 @@ func TestRejoin(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
-
 	fmt.Printf("Test: rejoin of partitioned leader ...\n")
-
 	cfg.one(101, servers)
-
 	// leader network failure
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect(leader1)
@@ -562,32 +558,23 @@ func TestPersist2(t *testing.T) {
 	for iters := 0; iters < 5; iters++ {
 		cfg.one(10+index, servers)
 		index++
-
 		leader1 := cfg.checkOneLeader()
-
 		cfg.disconnect((leader1 + 1) % servers)
 		cfg.disconnect((leader1 + 2) % servers)
-
 		cfg.one(10+index, servers-2)
 		index++
-
 		cfg.disconnect((leader1 + 0) % servers)
 		cfg.disconnect((leader1 + 3) % servers)
 		cfg.disconnect((leader1 + 4) % servers)
-
 		cfg.start1((leader1 + 1) % servers)
 		cfg.start1((leader1 + 2) % servers)
 		cfg.connect((leader1 + 1) % servers)
 		cfg.connect((leader1 + 2) % servers)
-
 		time.Sleep(RaftElectionTimeout)
-
 		cfg.start1((leader1 + 3) % servers)
 		cfg.connect((leader1 + 3) % servers)
-
 		cfg.one(10+index, servers-2)
 		index++
-
 		cfg.connect((leader1 + 4) % servers)
 		cfg.connect((leader1 + 0) % servers)
 	}

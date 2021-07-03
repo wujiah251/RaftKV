@@ -58,6 +58,7 @@ func (rf *Raft) apply(index int) {
 		Snapshot:    nil,
 	}
 	DPrintf("[DEBUG] Srv[%v](%s) apply log entry %+v", rf.me, rf.getRole(), rf.log[index].Command)
+	// 提交log
 	rf.applyCh <- msg
 }
 

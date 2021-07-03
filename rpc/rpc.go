@@ -149,35 +149,24 @@ func (rn *Network) IsServerDead(endname interface{}, servername interface{}, ser
 // 网络处理请求
 func (rn *Network) ProcessReq(req reqMsg) {
 	enabled, servername, server, reliable, longreordering := rn.ReadEndnameInfo(req.endname)
-
 	if enabled && servername != nil && server != nil {
 		if reliable == false {
 			// short delay
 			ms := (rand.Int() % 27)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
-
 		if reliable == false && (rand.Int()%1000) < 100 {
 			// 1/10的概率丢弃消息
 			req.replyCh <- replyMsg{false, nil}
 			return
 		}
-
-		// execute the request (call the RPC handler).
-		// in a separate thread so that we can periodically check
-		// if the server has been killed and the RPC should get a
-		// failure reply.
 		// 只想请求：调用RPC handler
 		ech := make(chan replyMsg)
 		go func() {
-			//
 			r := server.dispatch(req)
 			ech <- r
 		}()
 
-		// wait for handler to return,
-		// but stop waiting if DeleteServer() has been called,
-		// and return an error.
 		var reply replyMsg
 		replyOK := false
 		serverDead := false
@@ -191,12 +180,6 @@ func (rn *Network) ProcessReq(req reqMsg) {
 			}
 		}
 
-		// do not reply if DeleteServer() has been called, i.e.
-		// the server has been killed. this is needed to avoid
-		// situation in which a client gets a positive reply
-		// to an Append, but the server persisted the update
-		// into the old Persister. config.go is careful to call
-		// DeleteServer() before superseding the Persister.
 		serverDead = rn.IsServerDead(req.endname, servername, server)
 
 		if replyOK == false || serverDead == true {
