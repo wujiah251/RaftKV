@@ -44,21 +44,21 @@ func (rf *Raft) Kill() {
 // 创建一个Raft实例
 func Make(peers []*rpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	// TODO: Modify Make() to create a background goroutine that starts an election by sending out RequestVote RPC when it hasn't heard from another peer for a while
+
 	DPrintf("[DEBUG] Server[%v]: Start Func Make()\n", me)
 	defer DPrintf("[DEBUG] Server[%v]: End Func Make()\n", me)
 	// 初始化 Raft Server状态
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
 
-	rf.currentTerm = 0
-	rf.votedFor = -1 // 用-1表示null
-	rf.applyCh = applyCh
-	rf.lastApplied = 0
-	rf.commitIndex = 0
-
+	rf := &Raft{
+		peers:       peers,
+		persister:   persister,
+		me:          me,
+		currentTerm: 0,
+		votedFor:    -1, // 用-1表示null
+		applyCh:     applyCh,
+		lastApplied: 0,
+		commitIndex: 0,
+	}
 	// 初始化log，并加入一个空的守护日志（因为log的index从1开始）
 	guideEntry := LogEntry{
 		Command: nil,
@@ -68,10 +68,12 @@ func Make(peers []*rpc.ClientEnd, me int,
 	rf.log = append(rf.log, guideEntry)
 	rf.role = FOLLOWER
 	rf.leaderID = -1
+	// 读取持久化文件，恢复之前的状态
 	rf.readPersist(persister.ReadRaftState())
 
 	// 初始化选举的计时器
 	rf.electionTimer = time.NewTimer(100 * time.Millisecond)
+	// 初始化心跳计时器
 	rf.heartBeatTimer = time.NewTimer(getHeartBeatInterval())
 
 	// Sever启动时，是follower状态。 若收到来自leader或者candidate的有效PRC，就持续保持follower状态。

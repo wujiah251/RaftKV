@@ -9,7 +9,7 @@ import (
 	"wujiah251/RaftKV/rpc"
 )
 
-// 用于同步操作
+// 客户端请求
 type Op struct {
 	Type   int       // 操作类型
 	Key    string    // 键
@@ -35,12 +35,12 @@ type RaftKV struct {
 
 // RPC调用：Get
 func (kv *RaftKV) Get(req *GetArgs, reply *GetReply) {
-	var op Op
-	op.Type = GetType
-	op.Key = req.Key
-	op.Client = req.ClientId
-	op.Id = req.Id
-
+	op := Op{
+		Type:   GetType,
+		Key:    req.Key,
+		Client: req.ClientId,
+		Id:     req.Id,
+	}
 	reply.WrongLeader = kv.Operate(op)
 
 	if reply.WrongLeader {
@@ -103,10 +103,7 @@ func (kv *RaftKV) Operate(op Op) bool {
 	kv.mu.Lock()
 	kv.waitingOps[index] = nil
 	kv.mu.Unlock()
-	if !ok {
-		return true
-	}
-	return false
+	return !ok
 }
 
 // 干掉一个KVServer，其实只需要干掉Raft节点
@@ -119,26 +116,26 @@ func (kv *RaftKV) Handle(msg *raft.ApplyMsg) {
 	// 加锁
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	var args Op
-	args = msg.Command.(Op)
-	if kv.opId[args.Client] >= args.Id {
+	var req Op
+	req = msg.Command.(Op)
+	if kv.opId[req.Client] >= req.Id {
+		// 当前对该客户端记录的id超过了来源id，说明这是已经返回过的操作
 		// 幂等控制
 	} else {
-		switch args.Type {
+		switch req.Type {
 		case PutType:
-			kv.data[args.Key] = args.Value
+			kv.data[req.Key] = req.Value
 		case GetType:
 		// 不做任何操作
 		case AppendType:
-			kv.data[args.Key] = kv.data[args.Key] + args.Value
-
+			kv.data[req.Key] = kv.data[req.Key] + req.Value
 		}
 		// 更新来源请求id
-		kv.opId[args.Client] = args.Id
+		kv.opId[req.Client] = req.Id
 	}
 	op := kv.waitingOps[msg.Index]
 	if op != nil {
-		if op.Client == args.Client && op.Id == args.Id {
+		if op.Client == req.Client && op.Id == req.Id {
 			// 客户端相同、操作id相同
 			// 同步完成
 			op.Flag <- true
@@ -155,8 +152,9 @@ func StartKVServer(servers []*rpc.ClientEnd, me int, persister *raft.Persister, 
 	kv.me = me
 	kv.maxRaftState = maxRaftState
 	kv.persister = persister
-
+	// kvRaft和Raft共用channel
 	kv.applyCh = make(chan raft.ApplyMsg)
+	// 创建Raft节点并启动
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	kv.data = make(map[string]string)

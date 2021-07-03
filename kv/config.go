@@ -215,19 +215,12 @@ func (cfg *config) DisconnectClient(ck *Clerk, from []int) {
 	cfg.DisconnectClientUnlocked(ck, from)
 }
 
-// Shutdown a server by isolating it
+// 干掉服务器i
 func (cfg *config) ShutdownServer(i int) {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
-
 	cfg.disconnectUnlocked(i, cfg.All())
-
-	// disable client connections to the server.
-	// it's important to do this before creating
-	// the new Persister in saved[i], to avoid
-	// the possibility of the server returning a
-	// positive reply to an Append but persisting
-	// the result in the superseded Persister.
+	// 从网络中删除
 	cfg.net.DeleteServer(i)
 
 	// a fresh persister, in case old instance
@@ -250,49 +243,50 @@ func (cfg *config) ShutdownServer(i int) {
 // If restart servers, first call ShutdownServer
 func (cfg *config) StartServer(i int) {
 	cfg.mu.Lock()
-
-	// a fresh set of outgoing ClientEnd names.
+	// 互斥锁保护状态信息的变更
+	// 为服务器i生成到每个服务器的连接的客户端
 	cfg.endnames[i] = make([]string, cfg.n)
 	for j := 0; j < cfg.n; j++ {
 		cfg.endnames[i][j] = randstring(20)
 	}
-
-	// a fresh set of ClientEnds.
+	// 将所有客户端添加在网络中
 	ends := make([]*rpc.ClientEnd, cfg.n)
 	for j := 0; j < cfg.n; j++ {
 		ends[j] = cfg.net.MakeEnd(cfg.endnames[i][j])
 		cfg.net.Connect(cfg.endnames[i][j], j)
 	}
 
-	// a fresh persister, so old instance doesn't overwrite
-	// new instance's persisted state.
-	// give the fresh persister a copy of the old persister's
-	// state, so that the spec is that we pass StartKVServer()
-	// the last persisted state.
 	if cfg.saved[i] != nil {
+		// 读取持久化内容
 		cfg.saved[i] = cfg.saved[i].Copy()
 	} else {
+		// 创建持久化文件
 		cfg.saved[i] = raft.MakePersister()
 	}
 	cfg.mu.Unlock()
 
+	// 启动服务器
 	cfg.kvservers[i] = StartKVServer(ends, i, cfg.saved[i], cfg.maxraftstate)
 
+	// 创建service
 	kvsvc := rpc.MakeService(cfg.kvservers[i])
 	rfsvc := rpc.MakeService(cfg.kvservers[i].rf)
+	// 创建服务器，并把服务添加到服务器中
 	srv := rpc.MakeServer()
 	srv.AddService(kvsvc)
 	srv.AddService(rfsvc)
+	// 向网络中添加服务器
 	cfg.net.AddServer(i, srv)
 }
 
+// 获取leader信息
 func (cfg *config) Leader() (bool, int) {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
 
 	for i := 0; i < cfg.n; i++ {
-		_, is_leader := cfg.kvservers[i].rf.GetState()
-		if is_leader {
+		_, isLeader := cfg.kvservers[i].rf.GetState()
+		if isLeader {
 			return true, i
 		}
 	}
@@ -301,12 +295,14 @@ func (cfg *config) Leader() (bool, int) {
 
 // Partition servers into 2 groups and put current leader in minority
 func (cfg *config) make_partition() ([]int, []int) {
-	_, l := cfg.Leader()
+	_, leader := cfg.Leader()
 	p1 := make([]int, cfg.n/2+1)
 	p2 := make([]int, cfg.n/2)
 	j := 0
+	// p1[0,1,...,n/2]
+	// p2[n/2,..,leader]
 	for i := 0; i < cfg.n; i++ {
-		if i != l {
+		if i != leader {
 			if j < len(p1) {
 				p1[j] = i
 			} else {
@@ -315,25 +311,27 @@ func (cfg *config) make_partition() ([]int, []int) {
 			j++
 		}
 	}
-	p2[len(p2)-1] = l
+	p2[len(p2)-1] = leader
 	return p1, p2
 }
 
+// 创建配置中心
 func make_config(t *testing.T, tag string, n int, unreliable bool, maxraftstate int) *config {
 	runtime.GOMAXPROCS(4)
-	cfg := &config{}
-	cfg.t = t
-	cfg.tag = tag
-	cfg.net = rpc.MakeNetwork()
-	cfg.n = n
-	cfg.kvservers = make([]*RaftKV, cfg.n)
-	cfg.saved = make([]*raft.Persister, cfg.n)
-	cfg.endnames = make([][]string, cfg.n)
-	cfg.clerks = make(map[*Clerk][]string)
-	cfg.nextClientId = cfg.n + 1000 // client ids start 1000 above the highest serverid
-	cfg.maxraftstate = maxraftstate
+	cfg := &config{
+		t:            t,
+		tag:          tag,
+		net:          rpc.MakeNetwork(),
+		n:            n,
+		kvservers:    make([]*RaftKV, n),
+		saved:        make([]*raft.Persister, n),
+		endnames:     make([][]string, n),
+		clerks:       make(map[*Clerk][]string),
+		nextClientId: n + 1000, // client ids start 1000 above the highest serverid
+		maxraftstate: maxraftstate,
+	}
 
-	// create a full set of KV servers.
+	// 启动所有服务器
 	for i := 0; i < cfg.n; i++ {
 		cfg.StartServer(i)
 	}

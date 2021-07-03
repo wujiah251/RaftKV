@@ -177,6 +177,7 @@ func (rf *Raft) getAppendEntriesRequest(slave int) AppendEntriesRequest {
 // RPC handler，提供给客户端的AppendEntries接口
 func (rf *Raft) AppendEntries(req AppendEntriesRequest, reply *AppendEntriesResponse) {
 	rf.mu.Lock()
+	// 添加完日志之后要做持久化
 	defer rf.persist()
 	defer rf.mu.Unlock()
 
