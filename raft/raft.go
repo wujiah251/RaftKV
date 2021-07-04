@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"github/wujiah251/RaftKV/rpc"
 	"math/rand"
 	"sort"
 	"sync"
 	"time"
-	"wujiah251/RaftKV/rpc"
 )
 
 // Raft中Server的三种状态

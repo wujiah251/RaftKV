@@ -1,8 +1,8 @@
 package raft
 
 import (
+	"github/wujiah251/RaftKV/rpc"
 	"time"
-	"wujiah251/RaftKV/rpc"
 )
 
 /*==========================================

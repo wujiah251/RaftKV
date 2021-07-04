@@ -79,7 +79,7 @@ func (rf *Raft) sendRequestVoteRPCToOthers() {
 	}
 }
 
-// 提供给外界调用的RPC方法
+// 请求投票给自己的方法
 func (rf *Raft) RequestVote(args RequestVoteRequest, reply *RequestVoteResponse) {
 	rf.mu.Lock()
 	DPrintf("[DEBUG] Server[%v]:(%s, Term:%v) Start Func RequestVote with args:%+v", rf.me, rf.getRole(), rf.currentTerm, args)
@@ -91,12 +91,14 @@ func (rf *Raft) RequestVote(args RequestVoteRequest, reply *RequestVoteResponse)
 	reply.Term = rf.currentTerm
 
 	if rf.currentTerm > args.Term {
+		// 对方任期号落后于自己
 		return
 	} else if rf.currentTerm < args.Term {
+		// 对方任期号领先于自己
 		rf.switchToFollower(args.Term)
 	}
 
-	// 是否可以进行投票
+	// 是否拒绝投票
 	if rf.rejectVote(args) {
 		return
 	}
@@ -130,9 +132,13 @@ func (rf *Raft) rejectVote(args RequestVoteRequest) bool {
 	}
 	// $5.4.1的限制
 	lastLogIndex, lastLogTerm := rf.getLastLogIndexTerm()
+	// 如果自己最后一条日志的任期比对方落后，则不拒绝
+	// 如果自己最后一条日志的任期比对方先进，则拒绝
 	if lastLogTerm != args.LastLogTerm {
 		return lastLogTerm > args.LastLogTerm
 	}
+	// 最后一条日志任期相等的话，比较日志槽号
+	// 如果自己的槽号更加先进，则拒绝，否则接受
 	return lastLogIndex > args.LastLogIndex
 }
 
@@ -187,6 +193,7 @@ func (rf *Raft) AppendEntries(req AppendEntriesRequest, reply *AppendEntriesResp
 
 	// 拒绝Term小于自己的节点的Append请求
 	if rf.currentTerm > req.Term {
+		// 失败
 		DPrintf("[DEBUG] Server[%v]:(%s) Reject AppendEntries due to currentTerm > req.Term", rf.me, rf.getRole())
 		return
 	}
@@ -214,7 +221,7 @@ func (rf *Raft) AppendEntries(req AppendEntriesRequest, reply *AppendEntriesResp
 		// 更新对方要同步给的自己的下一个NextIndex
 		reply.NextIndex = rf.getNextIndex()
 	} else if rf.log[req.PrevLogIndex].Term != req.PrevLogTerm {
-		// 时期不匹配，这是一次错误的append
+		// 时期不匹配，这是一次错误的append，提醒leader要回退
 		DPrintf("[DEBUG] Server[%v]:(%s) Previous log entries do not match", rf.me, rf.getRole())
 		// 失败
 		reply.NextIndex = BackOff
@@ -263,7 +270,7 @@ func (rf *Raft) sendAppendEntriesRPCToPeer(slave int) {
 	if reply.Term > rf.currentTerm {
 		// RPC的时期领先于自己，可能原因（宕机后重新恢复）
 		DPrintf("[DEBUG] Server[%v] (%s) Get reply for AppendEntries from %v, reply.Term > rf.currentTerm", rf.me, rf.getRole(), slave)
-		// 这个是否应该成为追随者并重置选举定时器
+		// 这个应该成为追随者并重置选举定时器
 		rf.switchToFollower(reply.Term)
 		rf.resetElectionTimer()
 		rf.mu.Unlock()
